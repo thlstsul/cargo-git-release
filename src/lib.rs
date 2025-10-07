@@ -86,16 +86,9 @@ struct WorkspacePackage {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TauriConfig {
-    package: Option<TauriPackage>,
     #[serde(flatten)]
     other: serde_json::Value,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct TauriPackage {
     version: String,
-    #[serde(flatten)]
-    other: serde_json::Value,
 }
 
 pub struct ReleaseTool {
@@ -296,7 +289,7 @@ impl ReleaseTool {
             let old_version = package.version.clone();
 
             // 创建新的 CargoToml 结构体来更新版本
-            let new_cargo_toml = self.create_updated_cargo_toml(&cargo, &old_version)?;
+            let new_cargo_toml = self.create_updated_cargo_toml(&cargo)?;
 
             let new_content = toml::to_string_pretty(&new_cargo_toml)?;
             fs::write(cargo_path, new_content)?;
@@ -315,7 +308,7 @@ impl ReleaseTool {
         Ok(())
     }
 
-    fn create_updated_cargo_toml(&self, cargo: &CargoToml, old_version: &str) -> Result<CargoToml> {
+    fn create_updated_cargo_toml(&self, cargo: &CargoToml) -> Result<CargoToml> {
         let content = toml::to_string(cargo)?;
         let mut updated: CargoToml = toml::from_str(&content)?;
 
@@ -324,25 +317,7 @@ impl ReleaseTool {
             package.version = self.args.version.clone();
         }
 
-        // 更新依赖版本
-        let updated_content = self.update_dependency_versions(&content, old_version)?;
-        updated = toml::from_str(&updated_content)?;
-
         Ok(updated)
-    }
-
-    fn update_dependency_versions(&self, content: &str, old_version: &str) -> Result<String> {
-        // 更新依赖中的版本号，匹配 workspace 成员的旧版本
-        let pattern = format!(r#"version\s*=\s*"{}""#, regex::escape(old_version));
-        let re = Regex::new(&pattern)?;
-
-        let new_content = re
-            .replace_all(content, |_: &regex::Captures| {
-                format!("version = \"{}\"", self.args.version)
-            })
-            .to_string();
-
-        Ok(new_content)
     }
 
     fn update_tauri_config(&mut self) -> Result<()> {
@@ -354,14 +329,9 @@ impl ReleaseTool {
                 let content = fs::read_to_string(tauri_path)?;
                 let mut tauri_config: TauriConfig = serde_json::from_str(&content)?;
 
-                if let Some(ref mut package) = tauri_config.package {
-                    let old_version = package.version.clone();
-                    package.version = self.args.version.clone();
-                    println!("✅ 更新 {}: {} -> {}", path, old_version, self.args.version);
-                } else {
-                    // 如果 package 字段不存在，尝试在根级别查找 version
-                    self.update_tauri_version_in_json(&content, tauri_path)?;
-                }
+                let old_version = tauri_config.version.clone();
+                tauri_config.version = self.args.version.clone();
+                println!("✅ 更新 {}: {} -> {}", path, old_version, self.args.version);
 
                 let new_content = serde_json::to_string_pretty(&tauri_config)?;
                 fs::write(tauri_path, new_content)?;
@@ -371,25 +341,6 @@ impl ReleaseTool {
         }
 
         println!("⚠️  未找到 tauri.conf.json，跳过");
-        Ok(())
-    }
-
-    fn update_tauri_version_in_json(&self, content: &str, path: &Path) -> Result<()> {
-        let re = Regex::new(r#""version"\s*:\s*"([^"]*)""#)?;
-
-        if let Some(caps) = re.captures(content) {
-            let old_version = &caps[1];
-            let new_content =
-                re.replace(content, format!("\"version\": \"{}\"", self.args.version));
-            fs::write(path, new_content.as_bytes())?;
-            println!(
-                "✅ 更新 {}: {} -> {}",
-                path.display(),
-                old_version,
-                self.args.version
-            );
-        }
-
         Ok(())
     }
 
