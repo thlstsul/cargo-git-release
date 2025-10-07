@@ -2,6 +2,9 @@
 name = "cargo-git-release"
 version = "0.1.0"
 edition = "2024"
+description = "A cargo subcommand to release crates to git"
+license = "Apache-2.0"
+repository = "https://github.com/thlstsul/cargo-git-release"
 
 [[bin]]
 name = "cargo-git-release"
