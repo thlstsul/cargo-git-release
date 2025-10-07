@@ -244,14 +244,12 @@ impl ReleaseTool {
 
         // 更新 workspace.package.version
         let mut old_version = None;
-        if let Some(ref mut workspace) = cargo.workspace {
-            if let Some(ref mut workspace_package) = workspace.package {
-                if let Some(ref mut version) = workspace_package.version {
+        if let Some(ref mut workspace) = cargo.workspace
+            && let Some(ref mut workspace_package) = workspace.package
+                && let Some(ref mut version) = workspace_package.version {
                     old_version = Some(version.clone());
                     *version = self.args.version.clone();
                 }
-            }
-        }
 
         if let Some(old_version) = old_version {
             let new_content = toml::to_string_pretty(&cargo)?;
@@ -368,14 +366,12 @@ impl ReleaseTool {
         let tag_name = format!("{}{}", self.args.tag_prefix, self.args.version);
 
         // 检查标签是否已存在
-        let tag_exists = StdCommand::new("git")
+        let tag_exists = !StdCommand::new("git")
             .arg("tag")
             .arg("-l")
             .arg(&tag_name)
             .output()?
-            .stdout
-            .len()
-            > 0;
+            .stdout.is_empty();
 
         if tag_exists {
             if self.args.re_publish {
