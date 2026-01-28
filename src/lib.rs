@@ -198,11 +198,17 @@ impl ReleaseTool {
 
         // 更新 tauri.conf.json
         self.update_tauri_config()?;
+        Self::cargo_check()?;
 
         println!(
             "✅ 版本号更新完成，共更新 {} 个文件",
             self.updated_files.len()
         );
+        Ok(())
+    }
+
+    fn cargo_check() -> Result<()> {
+        StdCommand::new("cargo").arg("check").status()?;
         Ok(())
     }
 
@@ -246,10 +252,11 @@ impl ReleaseTool {
         let mut old_version = None;
         if let Some(ref mut workspace) = cargo.workspace
             && let Some(ref mut workspace_package) = workspace.package
-                && let Some(ref mut version) = workspace_package.version {
-                    old_version = Some(version.clone());
-                    *version = self.args.version.clone();
-                }
+            && let Some(ref mut version) = workspace_package.version
+        {
+            old_version = Some(version.clone());
+            *version = self.args.version.clone();
+        }
 
         if let Some(old_version) = old_version {
             let new_content = toml::to_string_pretty(&cargo)?;
@@ -371,7 +378,8 @@ impl ReleaseTool {
             .arg("-l")
             .arg(&tag_name)
             .output()?
-            .stdout.is_empty();
+            .stdout
+            .is_empty();
 
         if tag_exists {
             if self.args.re_publish {
