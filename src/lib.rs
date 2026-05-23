@@ -4,7 +4,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
+use std::process::Command;
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
@@ -53,7 +53,7 @@ pub struct Cli {
     only: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CargoToml {
     package: Option<CargoPackage>,
     workspace: Option<CargoWorkspace>,
@@ -61,15 +61,22 @@ struct CargoToml {
     other: toml::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum PackageVersion {
+    Direct(String),
+    Workspace { workspace: bool },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CargoPackage {
     name: String,
-    version: String,
+    version: PackageVersion,
     #[serde(flatten)]
     other: toml::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CargoWorkspace {
     members: Option<Vec<String>>,
     package: Option<WorkspacePackage>,
@@ -77,7 +84,7 @@ struct CargoWorkspace {
     other: toml::Value,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkspacePackage {
     version: Option<String>,
     #[serde(flatten)]
@@ -156,10 +163,7 @@ impl ReleaseTool {
     }
 
     fn check_git_repo(&self) -> Result<()> {
-        let output = StdCommand::new("git")
-            .arg("rev-parse")
-            .arg("--is-inside-work-tree")
-            .output()?;
+        let output = run_git_cmd(&["rev-parse", "--is-inside-work-tree"])?;
 
         if !output.status.success() {
             return Err(anyhow!("当前目录不是 git 仓库"));
@@ -168,11 +172,7 @@ impl ReleaseTool {
     }
 
     fn is_working_tree_clean(&self) -> Result<bool> {
-        let output = StdCommand::new("git")
-            .arg("status")
-            .arg("--porcelain")
-            .output()?;
-
+        let output = run_git_cmd(&["status", "--porcelain"])?;
         Ok(output.stdout.is_empty())
     }
 
@@ -208,7 +208,7 @@ impl ReleaseTool {
     }
 
     fn cargo_check() -> Result<()> {
-        StdCommand::new("cargo").arg("check").status()?;
+        run_cmd(Command::new("cargo").arg("check"))?;
         Ok(())
     }
 
@@ -228,6 +228,7 @@ impl ReleaseTool {
 
     fn find_all_cargo_toml(&self) -> Result<Vec<PathBuf>> {
         let mut cargo_files = Vec::new();
+        let root_cargo = Path::new("Cargo.toml").canonicalize()?;
 
         for entry in WalkDir::new(".")
             .follow_links(true)
@@ -236,7 +237,10 @@ impl ReleaseTool {
         {
             let path = entry.path();
             if path.file_name().and_then(|s| s.to_str()) == Some("Cargo.toml") {
-                cargo_files.push(path.to_path_buf());
+                let full_path = path.canonicalize()?;
+                if full_path != root_cargo {
+                    cargo_files.push(path.to_path_buf());
+                }
             }
         }
 
@@ -291,7 +295,14 @@ impl ReleaseTool {
                 return Ok(());
             }
 
-            let old_version = package.version.clone();
+            // 检查版本是否继承自 workspace
+            let old_version = match &package.version {
+                PackageVersion::Direct(v) => v.clone(),
+                PackageVersion::Workspace { .. } => {
+                    println!("⏭️  跳过 crate {} (版本继承自 workspace)", crate_name);
+                    return Ok(());
+                }
+            };
 
             // 创建新的 CargoToml 结构体来更新版本
             let new_cargo_toml = self.create_updated_cargo_toml(&cargo)?;
@@ -314,12 +325,10 @@ impl ReleaseTool {
     }
 
     fn create_updated_cargo_toml(&self, cargo: &CargoToml) -> Result<CargoToml> {
-        let content = toml::to_string(cargo)?;
-        let mut updated: CargoToml = toml::from_str(&content)?;
+        let mut updated = cargo.clone();
 
-        // 更新 package.version
         if let Some(ref mut package) = updated.package {
-            package.version = self.args.version.clone();
+            package.version = PackageVersion::Direct(self.args.version.clone());
         }
 
         Ok(updated)
@@ -352,18 +361,10 @@ impl ReleaseTool {
     fn commit_changes(&self) -> Result<()> {
         println!("💾 提交更改...");
 
-        // 添加所有更改的文件
-        StdCommand::new("git").arg("add").arg("-A").status()?;
+        run_git_cmd(&["add", "-A"])?;
 
-        // 生成提交信息
         let commit_message = self.args.message.replace("{version}", &self.args.version);
-
-        // 提交
-        StdCommand::new("git")
-            .arg("commit")
-            .arg("-m")
-            .arg(&commit_message)
-            .status()?;
+        run_git_cmd(&["commit", "-m", &commit_message])?;
 
         println!("✅ 提交完成: {}", commit_message);
         Ok(())
@@ -372,27 +373,13 @@ impl ReleaseTool {
     fn handle_tag(&self) -> Result<()> {
         let tag_name = format!("{}{}", self.args.tag_prefix, self.args.version);
 
-        // 检查标签是否已存在
-        let tag_exists = !StdCommand::new("git")
-            .arg("tag")
-            .arg("-l")
-            .arg(&tag_name)
-            .output()?
-            .stdout
-            .is_empty();
+        let output = run_git_cmd(&["tag", "-l", &tag_name])?;
+        let tag_exists = !output.stdout.is_empty();
 
         if tag_exists {
             if self.args.re_publish {
                 println!("🔄 重新发布版本，删除旧标签...");
-
-                // 删除本地标签
-                StdCommand::new("git")
-                    .arg("tag")
-                    .arg("-d")
-                    .arg(&tag_name)
-                    .status()?;
-
-                // 删除所有远程仓库的标签
+                run_git_cmd(&["tag", "-d", &tag_name])?;
                 self.delete_remote_tags(&tag_name)?;
             } else {
                 return Err(anyhow!(
@@ -402,27 +389,20 @@ impl ReleaseTool {
             }
         }
 
-        // 创建新标签
         println!("🏷️  创建标签: {}", tag_name);
-        StdCommand::new("git")
-            .arg("tag")
-            .arg("-a")
-            .arg(&tag_name)
-            .arg("-m")
-            .arg(format!("Version {}", self.args.version))
-            .status()?;
+        let message = format!("Version {}", self.args.version);
+        run_git_cmd(&["tag", "-a", &tag_name, "-m", &message])?;
 
         Ok(())
     }
 
     fn delete_remote_tags(&self, tag_name: &str) -> Result<()> {
-        let remotes_output = StdCommand::new("git").arg("remote").output()?;
-
-        let remotes = String::from_utf8(remotes_output.stdout)?;
+        let output = run_git_cmd(&["remote"])?;
+        let remotes = String::from_utf8(output.stdout)?;
 
         for remote in remotes.lines() {
             println!("🗑️  删除远程标签 {}/{}", remote, tag_name);
-            let _ = StdCommand::new("git")
+            let _ = Command::new("git")
                 .arg("push")
                 .arg(remote)
                 .arg("--delete")
@@ -436,28 +416,32 @@ impl ReleaseTool {
     fn push_to_remotes(&self) -> Result<()> {
         println!("📤 推送到远程仓库...");
 
-        let remotes_output = StdCommand::new("git").arg("remote").output()?;
-
-        let remotes = String::from_utf8(remotes_output.stdout)?;
+        let output = run_git_cmd(&["remote"])?;
+        let remotes = String::from_utf8(output.stdout)?;
 
         for remote in remotes.lines() {
             println!("⬆️  推送到 {}", remote);
-
-            // 推送提交
-            StdCommand::new("git")
-                .arg("push")
-                .arg(remote)
-                .arg("HEAD")
-                .status()?;
-
-            // 推送标签
-            StdCommand::new("git")
-                .arg("push")
-                .arg(remote)
-                .arg("--tags")
-                .status()?;
+            run_git_cmd(&["push", remote, "HEAD"])?;
+            run_git_cmd(&["push", remote, "--tags"])?;
         }
 
         Ok(())
     }
+}
+
+fn run_git_cmd(args: &[&str]) -> Result<std::process::Output> {
+    let output = Command::new("git").args(args).output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!("git 命令失败: {}\n{}", args.join(" "), stderr));
+    }
+    Ok(output)
+}
+
+fn run_cmd(command: &mut Command) -> Result<()> {
+    let status = command.status()?;
+    if !status.success() {
+        return Err(anyhow!("命令执行失败: {:?}", command));
+    }
+    Ok(())
 }

@@ -8,7 +8,7 @@ fn main() {
     let mut tool = ReleaseTool::new(args);
 
     if let Err(error) = tool.run() {
-        println!("error: {}", error);
+        eprintln!("error: {}", error);
         process::exit(1);
     }
 }
