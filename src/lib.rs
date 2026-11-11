@@ -138,7 +138,7 @@ impl ReleaseTool {
             return Ok(());
         }
 
-        // 4. 提交更改
+        // 4. 提交更改（版本未变时无文件改动，跳过提交）
         self.commit_changes()?;
 
         // 5. 处理标签
@@ -359,6 +359,12 @@ impl ReleaseTool {
     }
 
     fn commit_changes(&self) -> Result<()> {
+        // 版本未变更时没有文件改动，跳过提交
+        if self.is_working_tree_clean()? {
+            println!("ℹ️  版本未变更，无文件改动，跳过提交");
+            return Ok(());
+        }
+
         println!("💾 提交更改...");
 
         run_git_cmd(&["add", "-A"])?;
